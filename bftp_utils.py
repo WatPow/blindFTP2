@@ -34,8 +34,6 @@ def augmenter_priorite():
         print("Impossible d'augmenter la priorité du processus:")
         print("Il est conseillé de le lancer en tant que root pour obtenir les meilleures performances.")
 
-# Vous pouvez ajouter d'autres fonctions utilitaires ici
-
 # Variables globales (à déplacer plus tard dans un fichier de configuration)
 MODE_DEBUG = False
 IgnoreExtensions = ('.part', '.tmp', '.ut', '.dlm')
