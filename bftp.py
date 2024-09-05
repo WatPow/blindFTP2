@@ -456,6 +456,12 @@ print(Paquet.__dict__)
 #------------------------------------------------------------------------------
 # HeartBeat - dépendant de la classe de paquet
 #---------------
+import threading
+import time
+import socket
+import struct
+import logging
+
 class HeartBeat:
     """ Generate and check HeartBeat BFTP packet
 
@@ -474,23 +480,23 @@ class HeartBeat:
     # Add HB from reception to emission in broadcast to detect bi-directional link
 
     def __init__(self):
-        #Variables locales
-        self.hb_delay=HB_DELAY
-        self.hb_numsession=0
-        self.hb_numpaquet=0
-        self.hb_timeout=time.time()+1.25*(self.hb_delay)
+        self.hb_delay = HB_DELAY
+        self.hb_numsession = 0
+        self.hb_numpaquet = 0
+        self.hb_timeout = time.time() + 1.25 * (self.hb_delay)
+        self.stop_event = threading.Event()
 
     def newsession(self):
         """ initiate values for a new session """
-        self.hb_numsession=int(time.time())
-        self.hb_numpaquet=0
-        return(self.hb_numsession, self.hb_numpaquet)
+        self.hb_numsession = int(time.time())
+        self.hb_numpaquet = 0
+        return (self.hb_numsession, self.hb_numpaquet)
 
     def incsession(self):
         """ increment values in a existing session """
-        self.hb_numpaquet+=1
-        self.hb_timeout=time.time()+(self.hb_delay)
-        return(self.hb_numpaquet, self.hb_timeout)
+        self.hb_numpaquet += 1
+        self.hb_timeout = time.time() + (self.hb_delay)
+        return (self.hb_numpaquet, self.hb_timeout)
 
     def print_heartbeat(self):
         """ Print internal values of heartbeat """
@@ -504,63 +510,74 @@ class HeartBeat:
 
     def check_heartbeat(self, num_session, num_paquet, delay):
         """ Check and diagnostic last received heartbeat paquet """
-        msg=None
-        #self.print_heartbeat()
+        msg = None
+        # self.print_heartbeat()
         # new session identification (session restart)
         if self.hb_numsession != num_session:
-                if num_paquet==0 :
-                    msg = 'HeartBeat : emission redemarree'
+            if num_paquet == 0:
+                msg = 'HeartBeat : emission redemarree'
+                logging.info(msg)
+            # lost packet in a new session (reception start was too late)
+            else:
+                # TODO : vérifier cas du redemarrage de la reception (valeurs locales à 0)
+                if (self.hb_numpaquet == 0 and self.hb_numsession == 0):
+                    msg = 'HeartBeat : reception redemaree'
                     logging.info(msg)
-                # lost packet in a new session (reception start was too late)
                 else:
-                    # TODO : vérifier cas du redemarrage de la reception (valeurs locales à 0)
-                    if (self.hb_numpaquet==0 and self.hb_numsession==0):
-                        msg = 'HeartBeat : reception redemaree'
-                        logging.info(msg)
-                    else:
-                        msg = 'HeartBeat : emission redemaree, perte de {} paquet(s)'.format(num_paquet)
-                        logging.warning(msg)
-                # Set correct num_session
-                self.hb_numsession=num_session
+                    msg = 'HeartBeat : emission redemaree, perte de {} paquet(s)'.format(num_paquet)
+                    logging.warning(msg)
+            # Set correct num_session
+            self.hb_numsession = num_session
         # lost packet identification
         else:
-            hb_lost=num_paquet-self.hb_numpaquet-1
-            if bool(hb_lost) :
+            hb_lost = num_paquet - self.hb_numpaquet - 1
+            if bool(hb_lost):
                 msg = 'HeartBeat : perte de {} paquet(s)'.format(hb_lost)
                 logging.warning(msg)
         # Set new values
-        self.hb_numpaquet=num_paquet
-        self.hb_timeout=time.time()+1.5*(delay)
-        if msg != None:
+        self.hb_numpaquet = num_paquet
+        self.hb_timeout = time.time() + 1.5 * (delay)
+        if msg is not None:
             Console.Print_temp(msg, NL=True)
             sys.stdout.flush()
 
-
     def checktimer_heartbeat(self):
         "Timer to send alarm if no heartbeat are received"
-        #self.print_heartbeat()
-        Nbretard=0
-        while True:
+        # self.print_heartbeat()
+        Nbretard = 0
+        while not self.stop_event.is_set():
             if self.hb_timeout < time.time():
-                Nbretard+=1
-                delta=time.time()-self.hb_timeout
+                Nbretard += 1
+                delta = time.time() - self.hb_timeout
                 msg = 'HeartBeat : Reception en attente ( {} ) '.format(self.hb_numpaquet)
                 Console.Print_temp(msg, NL=False)
                 sys.stdout.flush()
-                time.sleep(self.hb_delay-1)
-                if Nbretard%10==0:
-                    msg = 'HeartBeat : Retard de reception ( {} ) - {} '.format(self.hb_numpaquet, Nbretard//10)
+                time.sleep(self.hb_delay - 1)
+                if Nbretard % 10 == 0:
+                    msg = 'HeartBeat : Retard de reception ( {} ) - {} '.format(self.hb_numpaquet, Nbretard // 10)
                     logging.warning(msg)
                     Console.Print_temp(msg, NL=True)
             else:
-                Nbretard=0
+                Nbretard = 0
             time.sleep(1)
 
     def Th_checktimeout_heartbeatT(self):
         """ thead to send heartbeat """
-        Sendheartbeat=threading.Thread(target=self.checktimer_heartbeat)
+        Sendheartbeat = threading.Thread(target=self.checktimer_heartbeat)
         Sendheartbeat.start()
 
+    def envoyer_Boucleheartbeat(self):
+        """A loop to send heartbeat sequence every X seconds"""
+        self.newsession()
+        while not self.stop_event.is_set():
+            self.send_heartbeat()
+            self.incsession()
+            time.sleep(self.hb_delay)
+
+    def Th_envoyer_BoucleheartbeatT(self):
+        """ thead to send heartbeat """
+        Sendheartbeat = threading.Thread(target=self.envoyer_Boucleheartbeat)
+        Sendheartbeat.start()
 
     def send_heartbeat(self, message=None, num_session=None, num_paquet=None):
         """ Send a heartbeat packet """
@@ -576,40 +593,28 @@ class HeartBeat:
         if message is None:
             message = "HeartBeat"
         taille_donnees = len(message)
-        #self.print_heartbeat()
+        # self.print_heartbeat()
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         # on commence par packer l'entete:
         entete = struct.pack(FORMAT_ENTETE,
-            PAQUET_HEARTBEAT,
-            0,
-            taille_donnees,
-            0,
-            num_session,
-            num_paquet,
-            self.hb_delay,
-            1,
-            0,
-            0,
-            0
-            )
+                             PAQUET_HEARTBEAT,
+                             0,
+                             taille_donnees,
+                             0,
+                             num_session,
+                             num_paquet,
+                             self.hb_delay,
+                             1,
+                             0,
+                             0,
+                             0
+                             )
         paquet = entete + message.encode('utf-8')
         s.sendto(paquet, (HOST, PORT))
         s.close()
 
-    def envoyer_Boucleheartbeat(self):
-        """A loop to send heartbeat sequence every X seconds"""
-        self.newsession()
-        while True:
-            self.send_heartbeat()
-            self.incsession()
-            time.sleep(self.hb_delay)
-
-
-    def Th_envoyer_BoucleheartbeatT(self):
-        """ thead to send heartbeat """
-        Sendheartbeat = threading.Thread(target=self.envoyer_Boucleheartbeat)
-        Sendheartbeat.start()
-
+    def stop(self):
+        self.stop_event.set()
 #------------------------------------------------------------------------------
 # LimiteurDebit
 #-------------------
@@ -1198,7 +1203,7 @@ def synchro_arbo(repertoire):
             except OSError as e:
                 logging.warning(f"Erreur lors de la fermeture/suppression du fichier temporaire : {e}")
 
-        return iteration_count > 0  # Retourne True si au moins une itération a été effectuée
+    return True  # Indique que la synchronisation est terminée
 
 #==============================================================================
 # PROGRAMME PRINCIPAL
@@ -1227,58 +1232,61 @@ if __name__ == '__main__':
     logging.info("Demarrage de BlindFTP")
 
     # Emission de messages heartbeat
-    HB_emis=HeartBeat()
-    HB_recus=HeartBeat()
+    HB_emis = HeartBeat()
+    HB_recus = HeartBeat()
     if not(options.recevoir):
         HB_emis.Th_envoyer_BoucleheartbeatT()
 
-    if options.envoi_fichier:
-        envoyer(cible, cible.name)
-    elif (options.synchro_arbo or options.synchro_arbo_stricte):
-        # Délais pour considérer un fichier "hors ligne" comme définitivement effacé
-        OffLineDelay=OFFLINEDELAY
-        # Fichier référence de l'arborescence synchronisée
-        # TODO : Nom du fichier transmis en paramètre
-        print("Lecture/contruction du fichier de reprise")
-        XFLFile_id=False
-        working=TraitEncours.TraitEnCours()
-        working.StartIte()
-        if options.reprise:
-            XFLFile="BFTPsynchro.xml"
-            XFLFileBak="BFTPsynchro.bak"
-        else:
-            XFLFile_id,XFLFile=tempfile.mkstemp(prefix='BFTP_',suffix='.xml')
-        DRef = xfl.DirTree()
-        if (XFLFile_id):
-            debug("Fichier de reprise de la session : %s" %XFLFile)
-            DRef.read_disk(cible, working.AffCar)
-        else:
-            debug("Lecture du fichier de reprise : %s" %XFLFile)
-            try:
-                DRef.read_file(XFLFile)
-            except:
+    try:
+        if options.envoi_fichier:
+            envoyer(cible, cible.name)
+        elif (options.synchro_arbo or options.synchro_arbo_stricte):
+            # Délais pour considérer un fichier "hors ligne" comme définitivement effacé
+            OffLineDelay = OFFLINEDELAY
+            # Fichier référence de l'arborescence synchronisée
+            # TODO : Nom du fichier transmis en paramètre
+            print("Lecture/contruction du fichier de reprise")
+            XFLFile_id = False
+            working = TraitEncours.TraitEnCours()
+            working.StartIte()
+            if options.reprise:
+                XFLFile = "BFTPsynchro.xml"
+                XFLFileBak = "BFTPsynchro.bak"
+            else:
+                XFLFile_id, XFLFile = tempfile.mkstemp(prefix='BFTP_', suffix='.xml')
+            DRef = xfl.DirTree()
+            if (XFLFile_id):
+                debug("Fichier de reprise de la session : %s" % XFLFile)
                 DRef.read_disk(cible, working.AffCar)
-        
-        # Appel de la fonction synchro_arbo modifiée
-        synchronisation_effectuee = synchro_arbo(cible)
+            else:
+                debug("Lecture du fichier de reprise : %s" % XFLFile)
+                try:
+                    DRef.read_file(XFLFile)
+                except:
+                    DRef.read_disk(cible, working.AffCar)
+            
+            # Appel de la fonction synchro_arbo modifiée
+            synchronisation_effectuee = synchro_arbo(cible)
 
-        if synchronisation_effectuee:
-            logging.info("La synchronisation a été effectuée avec succès.")
-        else:
-            logging.info("Aucune synchronisation n'a été effectuée.")
+            if synchronisation_effectuee:
+                logging.info("La synchronisation a été effectuée avec succès.")
+            else:
+                logging.info("Aucune synchronisation n'a été effectuée.")
 
-        # Nettoyage après la synchronisation
-        if (XFLFile_id):
-            debug(f"Suppression du fichier de reprise temporaire : {XFLFile}")
-            os.close(XFLFile_id)
-            os.remove(XFLFile)
+            # Nettoyage après la synchronisation
+            if (XFLFile_id):
+                debug(f"Suppression du fichier de reprise temporaire : {XFLFile}")
+                os.close(XFLFile_id)
+                os.remove(XFLFile)
 
-    elif options.recevoir:
-        CHEMIN_DEST = path(args[0])
-        # on commence par augmenter la priorité du processus de réception:
-        augmenter_priorite()
-        # thread de timeout des heartbeat
-        HB_recus.Th_checktimeout_heartbeatT()
-        # puis on se met en réception:
-        recevoir(CHEMIN_DEST)
-    logging.info("Arret de BlindFTP")
+        elif options.recevoir:
+            CHEMIN_DEST = path(args[0])
+            augmenter_priorite()
+            HB_recus.Th_checktimeout_heartbeatT()
+            recevoir(CHEMIN_DEST)
+    finally:
+        # Arrêter les threads de heartbeat
+        HB_emis.stop()
+        HB_recus.stop()
+        logging.info("Arret de BlindFTP")
+        print("Le script BlindFTP s'est terminé correctement.")
